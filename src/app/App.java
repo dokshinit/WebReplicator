@@ -110,8 +110,6 @@ public class App {
         return false;
     }
 
-    private static int stateUpdateInterval = 200; // миллисекунды
-
     private static void startApp() throws Exception {
 
 //        ANSIOut out = new ANSIOut();
@@ -152,7 +150,7 @@ public class App {
 
         while (!isTerminated) {
             updateState();
-            safeTermSleep(stateUpdateInterval);
+            safeTermSleep(200);
         }
 
         out.cursorOn();
@@ -242,6 +240,6 @@ public class App {
         }
 
         //
-        out.color(18, bgbase).println(delim1_4);
+        out.color(18, bgbase).println(delim1_4).reset();
     }
 }
