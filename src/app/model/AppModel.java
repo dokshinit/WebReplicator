@@ -1,17 +1,17 @@
 package app.model;
 
-import app.App;
 import app.ExError;
 import fbdbengine.FB_Connection;
 import fbdbengine.FB_CustomException;
 import fbdbengine.FB_Database;
 import fbdbengine.FB_Query;
+import xconfig.XConfig;
 
+import java.io.File;
 import java.sql.SQLException;
-import java.time.LocalDateTime;
 
+import static app.App.isUI;
 import static app.App.logger;
-import static app.App.updateState;
 import static util.DateTools.*;
 
 /**
@@ -26,39 +26,89 @@ public class AppModel {
     public AppModel() {
     }
 
-    public void loadConfig() {
-    }
+    public int redrawInterval;
+    public String statePath;
+    public ServiceModel replModel;
 
-    public void configureDB() throws ExError {
+    public void init() throws ExError {
+        int delay;
+        String src_base, src_user, src_password;
+        String dst_base, dst_user, dst_password;
+
+        logger.infof("Загрузка конфигурации...");
         try {
-            dbCenter = new FB_Database(false, "127.0.0.1:Center", "SYSDBA", "xxxxxxxx", "UTF-8", false);
-            dbWeb = new FB_Database(false, "127.0.0.1:WebCenter", "SYSDBA", "xxxxxxxx", "UTF-8", false);
+            XConfig cfg = new XConfig();
+            cfg.load("app.config");
+
+            src_base = cfg.getKey("db-src.host", "192.168.1.6") + ":" + cfg.getKey("db-src.alias", "Center");
+            src_user = cfg.getKey("db-src.user", "LKREPLICATOR");
+            src_password = cfg.getKey("db-src.password", "xxxxxxxx");
+
+            dst_base = cfg.getKey("db-dst.host", "127.0.0.1") + ":" + cfg.getKey("db-dst.alias", "WebCenter");
+            dst_user = cfg.getKey("db-dst.user", "REPLICATOR");
+            dst_password = cfg.getKey("db-dst.password", "xxxxxxxx");
+
+            delay = cfg.getIntKey("replicator.delay", 30000);
+
+            if (isUI) {
+                redrawInterval = cfg.getIntKey("ui.redraw", 250);
+            } else {
+                redrawInterval = cfg.getIntKey("noui.redraw", 5000);
+                statePath = cfg.getKey("noui.path", "./state");
+            }
+
+        } catch (Exception ex) {
+            src_base = "192.168.1.6:Center";
+            src_user = "LKREPLICATOR";
+            src_password = "xxxxxxxx";
+            dst_base = "127.0.0.1:WebCenter";
+            dst_user = "REPLICATOR";
+            dst_password = "xxxxxxxx";
+            delay = 30000;
+            redrawInterval = isUI ? 250 : 5000;
+            statePath = "./state";
+
+            logger.infof("Ошибка загрузки конфигурации: %s! Приняты параметры по умолчанию!", ex.getMessage());
+        }
+
+        logger.infof("Настройка подключения к БД...");
+        try {
+            dbCenter = new FB_Database(false, src_base, src_user, src_password, "UTF-8", false);
+            dbWeb = new FB_Database(false, dst_base, dst_user, dst_password, "UTF-8", false);
         } catch (Exception ex) {
             throw new ExError("Ошибка настройки параметров БД!", ex);
         }
+
+        replModel = new ServiceModel(delay);
     }
+
 
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     // Вспомогательный инструментарий для операций с БД.
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 
-    /** Интерфейс для вызова обработчика операции с БД. */
+    /**
+     * Интерфейс для вызова обработчика операции с БД.
+     */
     @FunctionalInterface
     interface QFBTask {
         void run(final FB_Connection con) throws ExError, SQLException, Exception;
     }
 
-    /** Хелпер для операций с БД. */
+    /**
+     * Хелпер для операций с БД.
+     */
     void QFB(FB_Database db, QFBTask task) throws ExError {
+        String dbname = db == dbCenter ? "Center" : "Web";
         FB_Connection con;
         try {
             con = db.connect(); // Соединение
 
         } catch (Exception ex) {
             FB_CustomException e = FB_CustomException.parse(ex);
-            if (e != null) throw new ExError(ex, "Ошибка подключения к БД: %s", e.name + ": " + e.message);
-            logger.error("Ошибка подключения к БД!", ex);
-            throw new ExError(ex, "Ошибка подключения к БД! Детальная информация в логе.");
+            if (e != null) throw new ExError(ex, "Ошибка подключения к БД(%s): %s", dbname, e.name + ": " + e.message);
+            logger.errorf(ex, "Ошибка подключения к БД(%s)!", dbname);
+            throw new ExError(ex, "Ошибка подключения к БД(%s)! Детальная информация в логе.", dbname);
         }
         // Соединение установлено.
         try {
@@ -70,9 +120,9 @@ public class AppModel {
 
         } catch (Exception ex) {
             FB_CustomException e = FB_CustomException.parse(ex);
-            if (e != null) throw new ExError(ex, "Ошибка операции БД: %s", e.name + ": " + e.message);
-            logger.error("Ошибка операции БД!", ex);
-            throw new ExError(ex, "Ошибка операции БД! Детальная информация в логе.");
+            if (e != null) throw new ExError(ex, "Ошибка операции БД(%s): %s", dbname, e.name + ": " + e.message);
+            logger.errorf(ex, "Ошибка операции БД(%s)!", dbname);
+            throw new ExError(ex, "Ошибка операции БД(%s)! Детальная информация в логе.", dbname);
 
         } finally {
             // Если не внешнее - закрываем с роллбэк (если нужно сохранение данных - это надо сделать в теле задачи).
@@ -83,203 +133,66 @@ public class AppModel {
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     // Репликация БД.
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-    public static class TabInfo {
-        public String name;
-        public String title;
-        public LocalDateTime startTime, endTime;
-        public int count;
-        public int index;
-        public long xver_max;
-
-        public TabInfo(String name, String title) {
-            this.name = name;
-            this.title = title;
-            clear();
-        }
-
-        public synchronized void clear() {
-            startTime = null;
-            endTime = null;
-            count = 0;
-            index = 0;
-            xver_max = 0;
-        }
-
-        public synchronized void copyTo(TabInfo dst) {
-            dst.name = name;
-            dst.title = title;
-            dst.startTime = startTime;
-            dst.endTime = endTime;
-            dst.count = count;
-            dst.index = index;
-            dst.xver_max = xver_max;
-        }
-
-        public synchronized void start() {
-            startTime = LocalDateTime.now();
-            xver_max = 0;
-        }
-
-        public synchronized void end(int index, long xver_max) {
-            this.index = index;
-            this.count = index;
-            this.xver_max = xver_max;
-            this.endTime = LocalDateTime.now();
-        }
-
-        public synchronized void initCount(int count) {
-            this.index = 0;
-            this.count = count;
-        }
-
-        public synchronized void updateIndex(int index, long xver_max) {
-            this.index = index;
-            this.xver_max = xver_max;
-        }
-    }
-
-    public static class ServiceModel {
-        public LocalDateTime startTime;
-
-        public int allCount;
-        public long allMsec;
-        public int allRowCount;
-
-        public LocalDateTime curStartTime, curEndTime;
-        public long curRowCount; // кол-во реплицированных строк.
-
-        public TabInfo[] tabs;
-        public int curTab;
-        public boolean isReplication;
-
-        public long xver, xver_max;
-
-        public ServiceModel() {
-            startTime = LocalDateTime.now();
-            allCount = 0;
-            allMsec = 0;
-            allRowCount = 0;
-
-            curStartTime = null;
-            curEndTime = null;
-            curRowCount = 0; // кол-во реплицированных строк.
-
-            tabs = new TabInfo[]{
-                    new TabInfo("AZS", "Лицевые счета"),
-                    new TabInfo("CARD", "Лицевые счета"),
-                    new TabInfo("CLIENT", "Лицевые счета"),
-                    new TabInfo("CONTRACT", "Лицевые счета"),
-                    new TabInfo("REGISTRY", "Лицевые счета"),
-                    new TabInfo("ACC", "Лицевые счета"),
-                    new TabInfo("TRANS", "Лицевые счета"),
-                    new TabInfo("PAY", "Лицевые счета")
-            };
-            curTab = -1;
-            isReplication = false;
-
-            xver = 0;
-            xver_max = 0;
-        }
-
-        public synchronized void copyTo(ServiceModel dst) {
-            dst.startTime = startTime;
-            dst.allCount = allCount;
-            dst.allMsec = allMsec;
-            dst.allRowCount = allRowCount;
-            dst.curStartTime = curStartTime;
-            dst.curEndTime = curEndTime;
-            dst.curRowCount = curRowCount;
-            for (int i = 0; i < tabs.length; i++) tabs[i].copyTo(dst.tabs[i]);
-            dst.curTab = curTab;
-            dst.isReplication = isReplication;
-            dst.xver = xver;
-            dst.xver_max = xver_max;
-        }
-
-        public synchronized void startReplicate() {
-            curStartTime = LocalDateTime.now();
-            curEndTime = null;
-            curRowCount = 0;
-            isReplication = true;
-            for (TabInfo t : tabs) t.clear();
-            curTab = -1;
-            xver = xver_max = 0;
-        }
-
-        public synchronized void endReplicate() {
-            curEndTime = LocalDateTime.now();
-            allCount++;
-            allMsec += toMillis(curEndTime) - toMillis(curStartTime);
-            allRowCount += curRowCount;
-            curTab = -1;
-            isReplication = false;
-        }
-
-        public synchronized void setXVer(long xver) {
-            this.xver = xver;
-        }
-
-        public synchronized void startReplicateTable(int i) {
-            curTab = i;
-        }
-
-        public synchronized void endReplicateTable() {
-            curRowCount += tabs[curTab].index;
-            xver_max = Math.max(xver_max, tabs[curTab].xver_max);
-            if (curTab == tabs.length-1) curTab = -1; // После последней таблицы.
-        }
-    }
-
 
     private FB_Connection src, dst;
-    public ServiceModel curModel;
 
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     public void replicate() throws ExError {
-        curModel.startReplicate();
+        replModel.startReplicate();
         logger.info("Старт репликации...");
 
-        // Репликация идёт в одном соединении и одной транзакции.
-        QFB(dbCenter, (srcCon) -> {
-            QFB(dbWeb, (dstCon) -> {
+        try {
+            try {
+                // Репликация идёт в одном соединении и одной транзакции.
+                QFB(dbCenter, (srcCon) -> {
+                    QFB(dbWeb, (dstCon) -> {
 
-                src = srcCon;
-                dst = dstCon;
+                        src = srcCon;
+                        dst = dstCon;
 
-                FB_Query qdst;
+                        FB_Query qdst;
 
-                ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-                // Запрос текущей версии.
-                qdst = dst.execute("EXECUTE PROCEDURE WR_XVER_GET");
-                if (!qdst.next()) throw new ExError("Ошибка чтения X_VER!");
-                curModel.setXVer(qdst.getLong("X_VER"));
-                //logger.infof("X_VER = %d", xver);
-                qdst.closeSafe();
+                        ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+                        // Запрос текущей версии.
+                        qdst = dst.execute("EXECUTE PROCEDURE WR_XVER_GET");
+                        if (!qdst.next()) throw new ExError("Ошибка чтения X_VER!");
+                        replModel.setXVer(qdst.getLong("X_VER"));
+                        //logger.infof("X_VER = %d", xver);
+                        qdst.closeSafe();
 
-                //xver = 0L;
+                        //xver = 0L;
 
-                ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-                // Репликация таблиц.
-                for (int i = 0; i < curModel.tabs.length; i++) {
-                    curModel.startReplicateTable(i);
-                    replicateTable(curModel.tabs[i]);
-                    curModel.endReplicateTable();
-                }
+                        ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+                        // Репликация таблиц.
+                        for (int i = 0; i < replModel.tabs.length; i++) {
+                            TabInfo tab = replModel.tabs[i];
+                            replModel.startReplicateTable(i);
+                            replicateTable(tab);
+                            replModel.endReplicateTable();
+                            if (tab.isError) throw new ExError("Ошибка репликации таблицы %s!", tab.name);
+                        }
 
-                ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-                // Запись новой версии (если увеличилась).
-                if (curModel.xver_max > curModel.xver) {
-                    qdst = dst.execute("EXECUTE PROCEDURE WR_XVER_SET(?)", curModel.xver_max);
-                    //logger.infof("X_VERNEW = %d", xver_max);
-                    qdst.closeSafe();
-                }
+                        ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+                        // Запись новой версии (если увеличилась).
+                        if (replModel.xver_max > replModel.xver) {
+                            qdst = dst.execute("EXECUTE PROCEDURE WR_XVER_SET(?)", replModel.xver_max);
+                            //logger.infof("X_VERNEW = %d", xver_max);
+                            qdst.closeSafe();
+                        }
 
-                dst.commit();
+                        dst.commit();
 
-            });
-        });
-        curModel.endReplicate();
-        logger.infof("Завершение репликации: время=%s, строк=%d", formatHHMMSS(toMillis(curModel.curEndTime)-toMillis(curModel.curEndTime)), curModel.curRowCount);
+                    });
+                });
+
+            } catch (Exception ex) {
+                replModel.setError(ex.getMessage());
+                throw ex;
+            }
+        } finally {
+            replModel.endReplicate();
+            logger.infof("Завершение репликации: время=%s, строк=%d", formatHHMMSS(toMillis(replModel.curEndTime) - toMillis(replModel.curEndTime)), replModel.curRowCount);
+        }
     }
 
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -291,38 +204,76 @@ public class AppModel {
         return "";
     }
 
-    private void replicateTable(TabInfo tab) throws Exception {
+    private void replicateTable(TabInfo tab) {
         tab.start();
         //logger.infof("%s: CALC COUNT FOR IMPORT...", tab.name);
 
-        FB_Query qsrc = src.execute("SELECT count(*) FROM WR_EXPORT_" + tab.name + "(?)", curModel.xver);
-        qsrc.next();
-        tab.initCount(qsrc.getInteger(1));
-        qsrc.closeSafe();
-        //logger.infof("%s: FOR IMPORT = %d", tab.name, tab.count);
-
-        qsrc = src.execute("SELECT * FROM WR_EXPORT_" + tab.name + "(?)", curModel.xver);
-        int n = qsrc.rs().getMetaData().getColumnCount();
-        FB_Query qdst = dst.query("EXECUTE PROCEDURE WR_IMPORT_" + tab.name + procParams(n));
-
         int index = 0;
         long xver_max = tab.xver_max;
-        Object[] vals = new Object[n];
-        while (qsrc.get(vals)) {
-            qdst.execute(vals);
-            index++;
-            xver_max = Math.max(xver_max, qsrc.getLong("X_VER"));
-            if (index % 100 == 0) {
-                tab.updateIndex(index, xver_max);
-            //    logger.infof("%s: IMPORTED = %d (%.1f%%)", tab.name, tab.count, tab.count == 0 ? 0 : tab.index * 100.0f / tab.count);
-            }
-        }
-        //logger.infof("%s: IMPORTED = %d (100%%)", tab.name, tab.index);
-        qsrc.closeSafe();
-        qdst.closeSafe();
+        try {
+            FB_Query qsrc = src.execute("SELECT count(*) FROM WR_EXPORT_" + tab.name + "(?)", replModel.xver);
+            qsrc.next();
+            tab.initCount(qsrc.getInteger(1));
+            qsrc.closeSafe();
+            //logger.infof("%s: FOR IMPORT = %d", tab.name, tab.count);
 
-        tab.end(index, xver_max);
-        //logger.infof("TIME = %s", formatHHMMSS(tab.timeMsec));
+            qsrc = src.execute("SELECT * FROM WR_EXPORT_" + tab.name + "(?)", replModel.xver);
+            int n = qsrc.rs().getMetaData().getColumnCount();
+            FB_Query qdst = dst.query("EXECUTE PROCEDURE WR_IMPORT_" + tab.name + procParams(n));
+
+            Object[] vals = new Object[n];
+            while (qsrc.get(vals)) {
+                qdst.execute(vals);
+                index++;
+                xver_max = Math.max(xver_max, qsrc.getLong("X_VER"));
+                if (index % 100 == 0) {
+                    tab.updateIndex(index, xver_max);
+                    //    logger.infof("%s: IMPORTED = %d (%.1f%%)", tab.name, tab.count, tab.count == 0 ? 0 : tab.index * 100.0f / tab.count);
+                }
+            }
+            //logger.infof("%s: IMPORTED = %d (100%%)", tab.name, tab.index);
+            qsrc.closeSafe();
+            qdst.closeSafe();
+
+            tab.end(index, xver_max, false);
+
+        } catch (Exception ex) {
+            tab.end(index, xver_max, true);
+            logger.error("", ex);
+            //logger.infof("TIME = %s", formatHHMMSS(tab.timeMsec));
+        }
     }
 
+    /**
+     * Создание каталога, если не существует.
+     */
+    public static File createDirectoryIfNotExist(String path) throws ExError {
+        try {
+            File dir = new File(path);
+            if (!dir.exists()) {
+                if (!dir.mkdir()) {
+                    throw new ExError("Ошибка создания каталога!");
+                }
+            }
+            return dir;
+        } catch (ExError ex) {
+            throw ex;
+        } catch (Exception e) {
+            throw new ExError(e, "Ошибка создания каталога!");
+        }
+    }
+
+    /**
+     * Безопасное удаление файла.
+     */
+    public static void deleteFileSafe(String path) {
+        try {
+            File file = new File(path);
+            if (file.exists()) {
+                // Если не удалился сразу - пробуем удалить при выходе на случай, если залочен.
+                if (!file.delete()) file.deleteOnExit();
+            }
+        } catch (Exception ignore) {
+        }
+    }
 }

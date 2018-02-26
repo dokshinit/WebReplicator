@@ -8,10 +8,12 @@ import app.model.*;
 import util.CommonTools;
 import util.StringTools;
 
+import java.io.File;
+import java.io.FileWriter;
+import java.lang.management.ManagementFactory;
 import java.time.LocalDateTime;
 import java.util.logging.Level;
 
-import static app.model.Helper.fmtDT84;
 import static app.model.Helper.fmtDT86;
 import static util.DateTools.formatHHMMSS;
 import static util.DateTools.toMillis;
@@ -45,10 +47,7 @@ public class App {
      */
     public final static AppModel model = new AppModel();
 
-    public static boolean isWindowsOS = false;
-    public static boolean isLinuxOS = false;
-
-    public static String homeDir = "";
+    public static boolean isUI = false;
 
     /**
      * Точка старта приложения.
@@ -57,10 +56,16 @@ public class App {
      */
     public static void main(String[] args) {
 
+        Runtime.getRuntime().addShutdownHook(new Thread(App::stopApp, "Shutdown-thread"));
+
+        for (String s : args) {
+            if ("showui".equals(s)) isUI = true;
+        }
+
         try {
             initLog(); // Инициализация логгера.
 
-            initDB(); // Настройка параметров БД.
+            initModel(); // Настройка модели.
 
             startApp(); // Старт приложения.
 
@@ -75,10 +80,6 @@ public class App {
      * @throws java.io.IOException
      */
     private static void initLog() {
-        String s = System.getProperty("os.name", "").toLowerCase().substring(0, 3);
-        if (s.equals("win")) isWindowsOS = true;
-        if (s.equals("lin")) isLinuxOS = true;
-
         // Отключаем вывод лога в консоль.
         LoggerExt.removeConsoleOutput();
         // Логгируем все сообщения.
@@ -86,16 +87,19 @@ public class App {
         // Настраиваем логгер для файлового вывода.
         logger.enable(true).toFile();
 
-        logger.config("Инициализация приложения");
+        logger.configf("Инициализация приложения (%s)", isUI ? "c UI" : "без UI");
     }
 
-    private static void initDB() throws Exception {
-        logger.config("Настройка параметров БД");
+    /**
+     * Настройка модели.
+     */
+    private static void initModel() throws Exception {
+        logger.config("Создание модели...");
         try {
-            model.configureDB();
+            model.init();
 
         } catch (Exception ex) {
-            logger.error("Ошибка настройки параметров БД!", ex);
+            logger.error("Ошибка создания модели!", ex);
             throw ex;
         }
     }
@@ -128,10 +132,16 @@ public class App {
 //        }
 //        out.attr(0);
 //        if (true) return;
+        if (!isUI) {
+            try {
+                model.createDirectoryIfNotExist(model.statePath);
 
-        model.curModel = new AppModel.ServiceModel();
+            } catch (Exception ex) {
+                logger.errorf(ex, "Не удалось создать каталог для файла состояния! (%s)", model.statePath);
+            }
+        }
 
-        out.cursorOff().attr(0).clear().at(1, 1);
+        if (isUI) out.cursorOff().attr(0).clear().at(1, 1);
 
         new Thread(() -> {
             // Крутим цикл репликации.
@@ -143,17 +153,17 @@ public class App {
                     //break;
                 }
                 // Пауза между репликациями.
-                if (safeTermSleep(5000)) break;
+                if (safeTermSleep(model.replModel.delayTime)) break;
             }
             isTerminated = true;
         }).start();
 
         while (!isTerminated) {
             updateState();
-            safeTermSleep(200);
+            safeTermSleep(model.redrawInterval);
         }
 
-        out.cursorOn();
+        if (isUI) out.cursorOn();
     }
 
     private static ANSIOut out = new ANSIOut();
@@ -169,13 +179,19 @@ public class App {
 
     private static final String delim111 = StringTools.fill('─', w - 20);
 
-    private static AppModel.ServiceModel CM = new AppModel.ServiceModel();
+    private static ServiceModel CM = new ServiceModel(0);
 
     private static int bgtitle = 19, bgbase = 17;
 
+    static String trunc(String s, int len) {
+        int n = s.length();
+        if (n <= len) return s;
+        return s.substring(0, len);
+    }
+
     public static void updateState() {
         stateUpdateTime = LocalDateTime.now();
-        model.curModel.copyTo(CM);
+        model.replModel.copyTo(CM);
         //
         String h1 = "---", h2 = "---", h3 = "---";
         String s1 = "---", s2 = "---";
@@ -191,55 +207,122 @@ public class App {
             } else {
                 if (CM.curStartTime != null) {
                     s1 = String.format("%s, Завершение: %s", fmtDT86(CM.curStartTime), fmtDT86(CM.curEndTime));
-                    s2 = String.format("%s", formatHHMMSS(toMillis(CM.curStartTime) - toMillis(CM.curStartTime)));
+                    s2 = String.format("%s", formatHHMMSS(toMillis(CM.curEndTime) - toMillis(CM.curStartTime)));
                 }
             }
         }
-        //
-        out.reset().at(1, 1);
-        out.color(15, bgtitle).bold().print(w, " «Сервис репликации БД»").boldOff()
-                .atX(w - 19).bold().color(230).println(fmtDT86(stateUpdateTime)).boldOff();
-        out.color(45).print(w, " v2018.02.15").atX(w - 46).color(123).print("© Докшин Алексей Николаевич, ")
-                .color(49).underline().println("dokshin@gmail.com").underlineOff();
-        out.color(bgbase, 18).println(delim3_4).color(7, bgbase);
 
-        int c1 = 18, c2 = 19;
-        //
-        out.println(w, " Время начала работы : %s", h1);
-        out.println(w, " Общее время работы  : %s", h2);
-        out.println(w, " Репликаций          : %s", h3);
+        if (isUI) {
+            //
+            out.reset().at(1, 1);
+            out.color(15, bgtitle).bold().print(w, " «Сервис репликации БД»").boldOff()
+                    .atX(w - 19).bold().color(230).println(fmtDT86(stateUpdateTime)).boldOff();
+            out.color(45).print(w, " v2018.02.15").atX(w - 46).color(123).print("© Докшин Алексей Николаевич, ")
+                    .color(49).underline().println("dokshin@gmail.com").underlineOff();
+            out.color(bgbase, 18).println(delim3_4).color(7, bgbase);
 
-        out.color(c1).println(delimSB).color(7, bgbase);
-        out.print(w, CM.isReplication ? " Текущая репликация" : " Последняя репликация");
-        out.println(w, "   Начало: %s", s1);
-        out.println(w, "   Длительность: %s", s2);
+            int c1 = 18, c2 = 19;
+            //
+            out.println(w, " Время начала работы : %s", h1);
+            out.println(w, " Общее время работы  : %s", h2);
+            out.println(w, " Репликаций          : %s", h3);
 
-        out.color(c1).println(delimS).color(7, bgbase);
-        for (int i = 0; i < CM.tabs.length; i++) {
-            AppModel.TabInfo tab = CM.tabs[i];
-            if (CM.curTab == i) {
-                long percent = tab.count == 0 ? 0 : tab.index * 100L / tab.count;
-                out.bold().color(11, 20).print(w, " ▶ ");
-                out.color(15).print("Таблица: %s (обработка)", tab.name);
-                out.atX(w - 7 - 6 - 19).print("%17s", String.format("[%d/%d]", tab.index, tab.count));
-                out.atX(w - 7 - 6).print("%3d%%", percent);
-                out.atX(w - 7).print("%s", formatHHMMSS(time - toMillis(tab.startTime)));
-                out.boldOff();
-            } else {
-                if (tab.startTime != null) { // ○◉□▣
-                    long percent = tab.count == 0 ? 100 : tab.index * 100L / tab.count;
-                    out.color(10, bgbase).print(w, " ▣ ").color(7).print("Таблица: %s", tab.name);
+            out.color(c1).println(delimSB).color(7, bgbase);
+            out.println(w, CM.isReplication ? " Текущая репликация" : " Последняя репликация");
+            out.println(w, "   Начало: %s", s1);
+            out.println(w, "   Длительность: %s", s2);
+
+            out.color(c1).println(delimS).color(7, bgbase);
+            for (int i = 0; i < CM.tabs.length; i++) {
+                TabInfo tab = CM.tabs[i];
+                if (CM.curTab == i) {
+                    long percent = tab.count == 0 ? 0 : tab.index * 100L / tab.count;
+                    out.bold().color(11, 20).print(w, " ▶ ");
+                    out.color(15).print("Таблица: %s (обработка)", tab.name);
                     out.atX(w - 7 - 6 - 19).print("%17s", String.format("[%d/%d]", tab.index, tab.count));
                     out.atX(w - 7 - 6).print("%3d%%", percent);
-                    out.atX(w - 7).print("%s", formatHHMMSS(toMillis(tab.endTime) - toMillis(tab.startTime)));
+                    out.atX(w - 7).print("%s", formatHHMMSS(time - toMillis(tab.startTime)));
+                    out.boldOff();
                 } else {
-                    out.color(21, bgbase).print(w, " □ ").color(7).print("Таблица: %s", tab.name);
+                    if (tab.startTime != null) { // ○◉□▣
+                        long percent = tab.count == 0 ? 100 : tab.index * 100L / tab.count;
+                        if (tab.isError) {
+                            out.color(1, bgbase).print(w, " ▣ ");
+                        } else {
+                            out.color(10, bgbase).print(w, " ▣ ");
+                        }
+                        out.color(7).print("Таблица: %s", tab.name);
+                        out.atX(w - 7 - 6 - 19).print("%17s", String.format("[%d/%d]", tab.index, tab.count));
+                        out.atX(w - 7 - 6).print("%3d%%", percent);
+                        out.atX(w - 7).print("%s", formatHHMMSS(toMillis(tab.endTime) - toMillis(tab.startTime)));
+                    } else {
+                        out.color(21, bgbase).print(w, " □ ").color(7).print("Таблица: %s", tab.name);
+                    }
                 }
+                out.println();
             }
-            out.println();
+
+            if (CM.errMessage == null) {
+                out.println(w, "");
+            } else {
+                out.color(7, 88).print(w, " Ошибка : ")
+                        .color(228).println(trunc(CM.errMessage, w - 10)).color(7, bgbase);
+            }
+            out.color(18, bgbase).println(delim1_4).reset();
         }
 
-        //
-        out.color(18, bgbase).println(delim1_4).reset();
+        // В файл...
+        if (!isUI) {
+            try {
+                //model.createDirectoryIfNotExist("./state/replicator");
+                StringTools.TextBuilder b = new StringTools.TextBuilder();
+                b.println(" «Сервис репликации БД»                                     %s", fmtDT86(stateUpdateTime));
+                b.println(" v2018.02.15                     © Докшин Алексей Николаевич, dokshin@gmail.com");
+                b.println("--------------------------------------------------------------------------------");
+                b.println(" Время начала работы : %s", h1);
+                b.println(" Общее время работы  : %s", h2);
+                b.println(" Репликаций          : %s", h3);
+                b.println("--------------------------------------------------------------------------------");
+                b.println(CM.isReplication ? " Текущая репликация" : " Последняя репликация");
+                b.println("   Начало: %s", s1);
+                b.println("   Длительность: %s", s2);
+                b.println("--------------------------------------------------------------------------------");
+                for (int i = 0; i < CM.tabs.length; i++) {
+                    TabInfo tab = CM.tabs[i];
+                    if (CM.curTab == i) {
+                        long percent = tab.count == 0 ? 0 : tab.index * 100L / tab.count;
+                        b.println("[>] Таблица: %-20s %32s %3d%% %s",
+                                tab.name, String.format("[%d/%d]", tab.index, tab.count), percent,
+                                formatHHMMSS(time - toMillis(tab.startTime)));
+                    } else {
+                        if (tab.startTime != null) { // ○◉□▣
+                            long percent = tab.count == 0 ? 100 : tab.index * 100L / tab.count;
+                            b.println("[%s] Таблица: %-20s %32s %3d%% %s",
+                                    tab.isError ? "E" : "+",
+                                    tab.name, String.format("[%d/%d]", tab.index, tab.count), percent,
+                                    formatHHMMSS(toMillis(tab.endTime) - toMillis(tab.startTime)));
+                        } else {
+                            b.println("[ ] Таблица: %s", tab.name);
+                        }
+                    }
+                }
+                b.println("--------------------------------------------------------------------------------");
+                if (CM.errMessage != null) b.println(" Ошибка : %s", CM.errMessage);
+
+                FileWriter fw = new FileWriter(model.statePath + File.separator + "app.state");
+                fw.append(b.toString());
+                fw.flush();
+                fw.close();
+
+            } catch (Exception ignore) {
+            }
+        }
+
     }
+
+    private static void stopApp() {
+        if (isUI) out.reset().color(7, 0).clear().cursorOn();
+        logger.infof("Приложение завершено!");
+    }
+
 }
