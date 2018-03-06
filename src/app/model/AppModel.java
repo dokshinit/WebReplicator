@@ -92,6 +92,7 @@ public class AppModel {
      */
     @FunctionalInterface
     interface QFBTask {
+        @SuppressWarnings("DuplicateThrows")
         void run(final FB_Connection con) throws ExError, SQLException, Exception;
     }
 
@@ -139,7 +140,7 @@ public class AppModel {
     ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
     public void replicate() throws ExError {
         replModel.startReplicate();
-        logger.info("Старт репликации...");
+        //logger.info("Старт репликации...");
 
         try {
             try {
@@ -191,7 +192,6 @@ public class AppModel {
             }
         } finally {
             replModel.endReplicate();
-            logger.infof("Завершение репликации: время=%s, строк=%d", formatHHMMSS(toMillis(replModel.curEndTime) - toMillis(replModel.curEndTime)), replModel.curRowCount);
         }
     }
 

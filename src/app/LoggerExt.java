@@ -5,8 +5,6 @@
 
 package app;
 
-import util.StringTools;
-
 import java.io.File;
 import java.lang.annotation.ElementType;
 import java.lang.annotation.Retention;
@@ -14,7 +12,9 @@ import java.lang.annotation.RetentionPolicy;
 import java.lang.annotation.Target;
 import java.lang.reflect.Method;
 import java.text.SimpleDateFormat;
-import java.util.Date;
+import java.time.LocalDate;
+import java.time.LocalDateTime;
+import java.time.format.DateTimeFormatter;
 import java.util.ResourceBundle;
 import java.util.function.Supplier;
 import java.util.logging.*;
@@ -55,16 +55,34 @@ public final class LoggerExt extends Logger {
 
     private boolean isEnabled; // true-идёт логирование, false-нет.
     private boolean isCallerFind; // true-производится поиск источника точки вызова лога, false-нет.
-    private boolean isToFile;
+
+    private FileHandler fileHandler; // Хендл при выводе в файл.
+    private String filePath, filePattern; // Путь и шаблон имени файла.
+    private LocalDateTime fileDT; // Дата файла подставленная в текущий паттерн.
+    private final Object fileSync = new Object(); // Для синхронного доступа при логе в файл.
+
+    @FunctionalInterface
+    public interface FileUpdateCheck {
+        boolean isNeedUpdate(LoggerExt log);
+    }
+
+    private FileUpdateCheck fileCheck;
+    public static final FileUpdateCheck FILE_UPDATE_NO = (log) -> false;
+    public static final FileUpdateCheck FILE_UPDATE_DATE = (log) -> !log.getFileDT().toLocalDate().equals(LocalDate.now());
+
     private int mask; // Маска для управления логированием (для пользовательского управления выводом информации в лог), самим логгером не используется!
 
     private LoggerExt(String name) {
         super(name, null);
         isEnabled = false;
         isCallerFind = true;
-        isToFile = false;
+        fileHandler = null;
+        filePath = "./logs";
+        filePattern = "%1$s_%2$s.log";
+        fileCheck = FILE_UPDATE_DATE;
         mask = -1;
         LogManager.getLogManager().addLogger(LoggerExt.this);
+        setLevel(Level.ALL);
     }
 
     public static LoggerExt getCommonLogger() {
@@ -105,9 +123,15 @@ public final class LoggerExt extends Logger {
         if (handlers[0] instanceof ConsoleHandler) {
             handlers[0].setFormatter(formatter);
             handlers[0].setLevel(Level.ALL);
-            // Удаление консольного логирования в винде! Там и с кодировками проблемы и не нужно!
-            if (isWindowsOS()) removeConsoleOutput();
+            if (isWindowsOS()) {
+                // Удаление консольного логирования в винде! Там и с кодировками проблемы и не нужно!
+                rootLogger.removeHandler(handlers[0]);
+            }
         }
+    }
+
+    public static void setConsoleFormatter() {
+        LoggerExt.setConsoleFormatter(new LogFormatter(false, false, true));
     }
 
     public static void removeConsoleOutput() {
@@ -116,20 +140,17 @@ public final class LoggerExt extends Logger {
         if (handlers[0] instanceof ConsoleHandler) rootLogger.removeHandler(handlers[0]);
     }
 
-    public static void setConsoleFormatter() {
-        LoggerExt.setConsoleFormatter(new LogFormatter(false, false, true));
-    }
-
     public static String getOSName3() {
-        return System.getProperty("os.name", "").toLowerCase().substring(0, 3);
+        String s = System.getProperty("os.name", "").toLowerCase();
+        return s.length() < 3 ? "" : s.substring(0, 3);
     }
 
     public static boolean isWindowsOS() {
-        return getOSName3().equals("win");
+        return "win".equals(getOSName3());
     }
 
     public static boolean isLinuxOS() {
-        return getOSName3().equals("lin");
+        return "lin".equals(getOSName3());
     }
 
     private static final SimpleDateFormat df = new SimpleDateFormat("yyyyMMdd");
@@ -154,54 +175,103 @@ public final class LoggerExt extends Logger {
         }
     }
 
-    public LoggerExt toFile(final String path) {
-        if (!isToFile) {
-            // Логгируем все сообщения.
-            setLevel(Level.ALL);
+    public String getFilePath() {
+        return filePath;
+    }
+
+    public String getFilePattern() {
+        return filePattern;
+    }
+
+    public LocalDateTime getFileDT() {
+        return fileDT;
+    }
+
+    public FileUpdateCheck getFileCheck() {
+        return fileCheck;
+    }
+
+    public boolean isToFile() {
+        synchronized (fileSync) {
+            return fileHandler != null;
+        }
+    }
+
+    public static final DateTimeFormatter FMT_DATETIME_YYYYMMDD = DateTimeFormatter.ofPattern("yyyyMMdd");
+
+    public LoggerExt toFile(final String path, String pattern, FileUpdateCheck check) {
+        synchronized (fileSync) {
+            Level oldLevel = getLevel();
+            setLevel(Level.OFF);
+
+            // Если вывод уже ведется в файл - закрываем предыдущий файл.
+            if (fileHandler != null) close();
 
             // Настраиваем логгер для файлового вывода.
             try {
+                filePath = path;
+                filePattern = pattern;
+                fileDT = LocalDateTime.now();
+                fileCheck = check;
+                String filename = filePath + "/" + String.format(filePattern, getName(), FMT_DATETIME_YYYYMMDD.format(fileDT), fileDT);
                 createDirectoryIfNotExist(path);
                 // В паттерне разделители заменяются на локальные!
-                FileHandler handler = new FileHandler(path + "/" + getName() + "_" + df.format(new Date()) + ".log", 0, 1, true);
-                handler.setLevel(Level.ALL);
-                handler.setFormatter(new LogFormatter());
-                addHandler(handler);
-                isToFile = true;
+                fileHandler = new FileHandler(filename, 0, 1, true);
+                fileHandler.setLevel(Level.ALL);
+                fileHandler.setFormatter(new LogFormatter());
+                addHandler(fileHandler);
 
             } catch (Exception e) {
+                fileHandler = null;
                 error("Ошибка создания лог-файла! Вывод в лог-файл будет игнорироваться!", e);
             }
+
+            setLevel(oldLevel);
         }
         return this;
     }
 
+    // В файл с текущими настройками (если не менялсь - дефолтными).
     public LoggerExt toFile() {
-        return toFile("./logs");
+        return toFile(filePath, filePattern, fileCheck);
     }
 
     public LoggerExt flush() {
-        if (isToFile) {
-            try {
-                for (Handler h : getHandlers()) h.flush();
-            } catch (Exception e) {
-                error("Ошибка сохранения буферов лог-файла!", e);
+        synchronized (fileSync) {
+            if (fileHandler != null) {
+                try {
+                    fileHandler.flush();
+                } catch (Exception e) {
+                    error("Ошибка сохранения буферов лог-файла!", e);
+                }
             }
         }
         return this;
     }
 
     public LoggerExt close() {
-        if (isToFile) {
-            try {
-                for (Handler h : getHandlers()) {
-                    h.flush();
-                    removeHandler(h);
-                    h.close();
+        synchronized (fileSync) {
+            if (fileHandler != null) {
+                try {
+                    fileHandler.flush();
+                    removeHandler(fileHandler);
+                    fileHandler.close();
+                    fileHandler = null;
+
+                } catch (Exception e) {
+                    fileHandler = null;
+                    error("Ошибка закрытия лог-файла!", e);
                 }
-                isToFile = false;
-            } catch (Exception e) {
-                error("Ошибка закрытия лог-файла!", e);
+            }
+        }
+        return this;
+    }
+
+    public LoggerExt updateFileIfNeed() {
+        // Для того, чтобы блок синхронизации задействовался только тогда, когда надо - помещаем внутрь.
+        if (fileCheck != null && fileCheck.isNeedUpdate(this)) {
+            synchronized (fileSync) {
+                if (fileHandler != null) toFile();
             }
         }
         return this;
@@ -252,6 +322,7 @@ public final class LoggerExt extends Logger {
     @Override
     public void log(LogRecord record) {
         if (isEnabled) {
+            updateFileIfNeed(); // Помещаем только сюда, т.к. этот метод юзается всеми остальными.
             if (isCallerFind) {
                 StackTraceElement e = findCallerPoint();
                 if (e != null) {

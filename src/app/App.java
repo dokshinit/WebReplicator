@@ -76,8 +76,6 @@ public class App {
 
     /**
      * Инициализация лога.
-     *
-     * @throws java.io.IOException
      */
     private static void initLog() {
         // Отключаем вывод лога в консоль.
@@ -148,6 +146,12 @@ public class App {
             while (!isTerminated) {
                 try {
                     model.replicate();
+                    if (model.replModel.curRowCount > 0) {
+                        logger.infof("Успешная репликация: время=%s, строк=%d",
+                                formatHHMMSS(toMillis(model.replModel.curEndTime) - toMillis(model.replModel.curEndTime)),
+                                model.replModel.curRowCount);
+                    }
+
                 } catch (Exception ex) {
                     logger.errorf(ex, "Ошибка репликации!");
                     //break;
