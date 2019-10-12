@@ -8,8 +8,8 @@ public class TabInfo {
     public LocalDateTime startTime, endTime;
     public int count;
     public int index;
-    public long xver_max;
-    public boolean isError;
+    /** Если не null, то содержит текст ошибки репликации. */
+    private String msgError;
 
     public TabInfo(String name, String title) {
         this.name = name;
@@ -22,8 +22,7 @@ public class TabInfo {
         endTime = null;
         count = 0;
         index = 0;
-        xver_max = 0;
-        isError = false;
+        msgError = null;
     }
 
     public synchronized void copyTo(TabInfo dst) {
@@ -33,24 +32,32 @@ public class TabInfo {
         dst.endTime = endTime;
         dst.count = count;
         dst.index = index;
-        dst.xver_max = xver_max;
-        dst.isError = isError;
+        dst.msgError = msgError;
     }
 
     public synchronized void start() {
         startTime = LocalDateTime.now();
-        xver_max = 0;
-        isError = false;
+        msgError = null;
     }
 
-    public synchronized void end(int index, long xver_max, boolean iserror) {
+    public synchronized void end(int index) {
         this.index = index;
-        if (!iserror) {
-            this.count = index;
-            this.xver_max = xver_max;
-        }
+        this.count = index;
         this.endTime = LocalDateTime.now();
-        this.isError = iserror;
+    }
+
+    public synchronized void end(int index, String msgError) {
+        this.index = index;
+        this.endTime = LocalDateTime.now();
+        this.msgError = msgError;
+    }
+
+    public synchronized boolean isError() {
+        return msgError != null;
+    }
+
+    public synchronized String msgError() {
+        return msgError == null ? "" : msgError;
     }
 
     public synchronized void initCount(int count) {
@@ -58,8 +65,7 @@ public class TabInfo {
         this.count = count;
     }
 
-    public synchronized void updateIndex(int index, long xver_max) {
+    public synchronized void updateIndex(int index) {
         this.index = index;
-        this.xver_max = xver_max;
     }
 }

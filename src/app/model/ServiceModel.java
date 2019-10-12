@@ -18,8 +18,6 @@ public class ServiceModel {
     public int curTab;
     public boolean isReplication;
 
-    public long xver, xver_max;
-
     public String errMessage;
 
     public int delayTime;
@@ -35,20 +33,17 @@ public class ServiceModel {
         curRowCount = 0; // кол-во реплицированных строк.
 
         tabs = new TabInfo[]{
-                new TabInfo("AZS", "Лицевые счета"),
-                new TabInfo("CARD", "Лицевые счета"),
-                new TabInfo("CLIENT", "Лицевые счета"),
-                new TabInfo("CONTRACT", "Лицевые счета"),
-                new TabInfo("REGISTRY", "Лицевые счета"),
-                new TabInfo("ACC", "Лицевые счета"),
-                new TabInfo("TRANS", "Лицевые счета"),
-                new TabInfo("PAY", "Лицевые счета")
+                new TabInfo("AZS", "АЗС"),
+                new TabInfo("CARD", "Карты ТК"),
+                new TabInfo("CLIENT", "Клиенты ТК"),
+                new TabInfo("CONTRACT", "Контракты ТК"),
+                new TabInfo("REGISTRY", "Реестр настроек"),
+                new TabInfo("ACC", "Лицевые счета ТК"),
+                new TabInfo("TRANS", "Транзакции ТК"),
+                new TabInfo("PAY", "Оплаты ТК")
         };
         curTab = -1;
         isReplication = false;
-
-        xver = 0;
-        xver_max = 0;
 
         errMessage = null;
 
@@ -66,8 +61,6 @@ public class ServiceModel {
         for (int i = 0; i < tabs.length; i++) tabs[i].copyTo(dst.tabs[i]);
         dst.curTab = curTab;
         dst.isReplication = isReplication;
-        dst.xver = xver;
-        dst.xver_max = xver_max;
 
         dst.errMessage = errMessage;
         dst.delayTime = delayTime;
@@ -80,7 +73,6 @@ public class ServiceModel {
         isReplication = true;
         for (TabInfo t : tabs) t.clear();
         curTab = -1;
-        xver = xver_max = 0;
         errMessage = null;
     }
 
@@ -95,17 +87,12 @@ public class ServiceModel {
         isReplication = false;
     }
 
-    public synchronized void setXVer(long xver) {
-        this.xver = xver;
-    }
-
     public synchronized void startReplicateTable(int i) {
         curTab = i;
     }
 
     public synchronized void endReplicateTable() {
         curRowCount += tabs[curTab].index;
-        xver_max = Math.max(xver_max, tabs[curTab].xver_max);
         if (curTab == tabs.length-1) curTab = -1; // После последней таблицы.
     }
 

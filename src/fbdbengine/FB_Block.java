@@ -9,12 +9,39 @@ import java.util.logging.Level;
 import java.util.logging.Logger;
 
 /**
+ * Класс-хелпер для удобства запросов к БД. Особенно блоков запросов.
+ * <p>
+ * Использование:
+ * <p>
+ * <pre>
+ *      FB_Databse db = ... // База данных.
+ *
+ *      // Обычный независимый запрос.
+ *      Integer res = new FB_Block<>() {
+ *          protected void process() throws Exception {
+ *              query = db.execute("...");
+ *              result = 1;
+ *              query.commit();
+ *          }
+ *      }.execute();
+ *
+ *      // Обычный запрос с использованием штатного соединения блока (при этом, если extconnection != null, то
+ *      // будет использоваться оно, и при этом коммита сделано не будет!).
+ *      Integer res = new FB_Block<>(extconnection) {
+ *          protected void process() throws Exception {
+ *              connect(db);
+ *              query = connection().execute("..."); // Не забываем закрывать перед переиспользованием тут же!
+ *              result = 1;
+ *              commit();
+ *          }
+ *      }.execute();
+ * </pre>
  *
  * @author Докшин Алексей Николаевич <dant.it@gmail.com>
  */
-public class FB_Block {
+public class FB_Block<R> {
 
-    // Константы для обработки исключений внутренними методами класса.  
+    // Константы для обработки исключений внутренними методами класса.
     public static final int PROC_OTHER_EXCEPTION = 1;
     public static final int PROC_CUSTOM_EXCEPTION = 2;
     public static final int PROC_ALL_EXCEPTION = PROC_OTHER_EXCEPTION | PROC_CUSTOM_EXCEPTION;
@@ -23,164 +50,172 @@ public class FB_Block {
     public static final int THROW_CUSTOM_EXCEPTION = 8;
     public static final int THROW_ALL_EXCEPTION = THROW_OTHER_EXCEPTION | THROW_CUSTOM_EXCEPTION;
     // Режим работы.
-    private final int mode;
-    private FB_Connection extconnection = null;
-    public FB_Connection connection = null;
-    // Запрос для оперирования с БД (после запроса он автоматически закрывается!).
-    public FB_Query query = null;
+    private int mode;
+    private final boolean isExtConnection;
+    private FB_Connection connection;
+    // Соединение для оперирования с БД (после запроса автоматически закрывается!).
+
+    // Логгер для ошибок.
+    protected Logger logger = null;
+    // Запрос для оперирования с БД (после запроса автоматически закрывается!).
+    protected FB_Query query = null, q = null; // Можно использовать и то и то или что-то одно.
     // Переменная для возврата результатов из запроса (после возврата из запроса обнуляется!).
-    public Object result = null;
-    private Exception exception = null;
-    private FB_CustomException fbException = null;
-
-    @FunctionalInterface
-    public interface Block {
-
-        public void run(FB_Block block) throws Exception;
-    }
+    protected R result = null;
 
     /**
      * Конструктор по умолчанию.
      */
     public FB_Block() {
-        this(null);
-    }
-
-    public FB_Block(int mode) {
-        this(mode, null);
+        this(-1, null);
     }
 
     public FB_Block(FB_Connection extcon) {
-        this(PROC_ALL_EXCEPTION | THROW_ALL_EXCEPTION, extcon);
+        this(-1, extcon);
     }
 
     public FB_Block(int mode, FB_Connection extcon) {
-        this.mode = mode;
-        this.extconnection = extcon;
+        this.mode = mode == -1 ? PROC_ALL_EXCEPTION | THROW_ALL_EXCEPTION : mode;
+        this.connection = extcon;
+        this.isExtConnection = (extcon != null);
+        init();
     }
 
-    /**
-     * Метод вызываемый при необходимости обработки пользовательских исключений
-     * БД средствами класса. Может быть переопределен.
-     *
-     * @param ex Исключение.
-     * @throws FB_CustomException Пользовательское исключение БД.
-     */
-    protected void processCustomException(final FB_CustomException ex) throws Exception {
+    protected boolean isExternal() {
+        return isExtConnection;
     }
 
-    /**
-     * Метод вызываемый при необходимости обработки прочих исключений средствами
-     * класса. Может быть переопределен.
-     *
-     * @param ex Исключение
-     * @throws Exception Исключение
-     */
-    protected void processOtherException(final Exception ex) throws Exception {
+    protected boolean isNotExternal() {
+        return !isExtConnection;
     }
 
-    protected Logger getLogger() {
-        return null;
+    protected FB_Connection connection() {
+        return connection;
     }
 
-    public FB_Block connect(FB_Database base) throws SQLException {
-        connect(base.connect());
-        return this;
+    protected void connect(FB_Database db) throws SQLException {
+        if (isNotExternal()) connection = db.connect();
     }
 
-    public FB_Block connect(FB_Connection con) {
-        if (extconnection == null) {
-            connection = con;
-            extconnection = null;
-        }
-        return this;
+    protected void commit() throws SQLException {
+        if (isNotExternal() && connection != null) connection.commit();
     }
 
-    public FB_Block query(FB_Database base) throws SQLException {
-        this.query = base.query(extconnection, "");
-        return this;
-    }
-
-    public void commitForNoExtConnection() throws SQLException {
-        if (extconnection == null) {
-            connection.commit();
-        }
-    }
-
-    public Object execute(Block block) throws FB_CustomException, Exception {
-        Object res = null;
-        result = null;
-        exception = null;
-        fbException = null;
-        try {
-            block.run(this);
-            //System.out.println("CREATE QUERY: " + q.getSqlText());
-        } catch (Exception e) {
-            exception = e;
-        } finally {
-            //System.out.println("CLOSE QUERY: " + (q != null ? q.getSqlText() : ""));
-            if (extconnection != null) {
-                if (query != null) {
-                    FB_Query.closeSafe(query);
-                }
-                FB_Connection.closeSafe(connection);
-            }
-            extconnection = null;
-            connection = null;
-            res = result;
-            query = null;
-            result = null;
-        }
-
-        if (exception != null) {
-            Logger log = getLogger();
-            fbException = FB_CustomException.parse(exception);
-            if (fbException != null) {
-                if (log != null) {
-                    log.log(Level.WARNING, "БД: Исключение при исполнении запроса! " + fbException.name, fbException);
-                }
-                if ((mode & PROC_CUSTOM_EXCEPTION) != 0) {
-                    processCustomException(fbException);
-                }
-                if ((mode & THROW_CUSTOM_EXCEPTION) != 0) {
-                    throw fbException;
-                }
-            } else {
-                if (log != null) {
-                    log.log(Level.WARNING, "БД: Ошибка исполнения запроса!", exception);
-                }
-                if ((mode & PROC_OTHER_EXCEPTION) != 0) {
-                    processOtherException(exception);
-                }
-                if ((mode & THROW_OTHER_EXCEPTION) != 0) {
-                    throw exception;
-                }
-            }
-        }
-        return res;
+    protected void rollback() throws SQLException {
+        if (isNotExternal() && connection != null) connection.rollback();
     }
 
     public int getMode() {
         return mode;
     }
 
-    public FB_Connection getExtConnection() {
-        return extconnection;
-    }
-
-    public FB_Connection getConnection() {
-        return connection;
-    }
-
-    public FB_Query getQuery() {
-        return query;
-    }
-
-    public Object getResult() {
+    /** Получение результата. */
+    public R getResult() {
         return result;
     }
 
-    public void setResult(Object result) {
+    /** Установка результата. */
+    protected void setResult(R result) {
         this.result = result;
+    }
+
+    /** Возвращает внутренний логгер. */
+    public Logger getLogger() {
+        return logger;
+    }
+
+    /** Устанавливает внутренний логгер. */
+    public FB_Block setLogger(Logger l) {
+        logger = l;
+        return this;
+    }
+
+    ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    // Методы конструирования и выполнения.
+
+    /** Метод вызываемый в конце конструктора. */
+    protected void init() {
+    }
+
+    /**
+     * Метод вызываемый при выполнении блока. По умолчанию вызывает установленную функцию. Может быть переопределен.
+     */
+    protected void process() throws Exception {
+    }
+
+    /**
+     * Метод вызываемый при необходимости обработки пользовательских исключений БД средствами класса. По умолчанию
+     * вызывает установленную функцию. Может быть переопределен.
+     */
+    protected void processCustomException(final FB_CustomException ex) throws Exception {
+    }
+
+    /**
+     * Метод вызываемый при необходимости обработки прочих исключений средствами класса. По умолчанию вызывает
+     * установленную функцию. Может быть переопределен.
+     */
+    protected void processOtherException(final Exception ex) throws Exception {
+    }
+
+    /**
+     * Метод вызываемый при необходимости обработки исключений БД средствами класса. По умолчанию вызывает установленную
+     * функцию. Может быть переопределен. Вместо него можно переопределить два метода для раздельной обработки по виду
+     * исключения. Вызывается после раздельных обработчиков!
+     */
+    protected void processException(final FB_CustomException fbex, final Exception ex) throws Exception {
+    }
+
+    /** Выполнение блока. */
+    public R execute() throws FB_CustomException, Exception {
+        R res = null;
+        result = null;
+        Exception exception = null;
+        try {
+            process();
+            //System.out.println("CREATE QUERY: " + q.getSqlText());
+        } catch (Exception e) {
+            exception = e;
+        } finally {
+            //System.out.println("CLOSE QUERY: " + (q != null ? q.getSqlText() : ""));
+            FB_Query.closeSafe(query);
+            FB_Query.closeSafe(q);
+            if (isNotExternal()) FB_Connection.closeSafe(connection);
+            res = result;
+            result = null;
+            query = null;
+            q = null;
+            connection = null;
+        }
+
+        if (exception != null) {
+            FB_CustomException fbException = FB_CustomException.parse(exception);
+            if (fbException != null) {
+                if (logger != null)
+                    logger.log(Level.WARNING, "БД: Исключение при исполнении запроса! " + fbException.name, fbException);
+                if ((mode & PROC_CUSTOM_EXCEPTION) != 0) {
+                    processCustomException(fbException);
+                    processException(fbException, exception);
+                }
+                if ((mode & THROW_CUSTOM_EXCEPTION) != 0) throw fbException;
+            } else {
+                if (logger != null)
+                    logger.log(Level.WARNING, "БД: Ошибка исполнения запроса!", exception);
+                if ((mode & PROC_OTHER_EXCEPTION) != 0) {
+                    processOtherException(exception);
+                    processException(null, exception);
+                }
+                if ((mode & THROW_OTHER_EXCEPTION) != 0) throw exception;
+            }
+        }
+        return res;
+    }
+
+    /** Выполнение блока без выкидывания исключений наружу (вне зависимости от заданного режима!). */
+    public R executeSafe() {
+        try {
+            mode = mode & (~THROW_ALL_EXCEPTION);
+            return execute();
+        } catch (Exception ignore) {
+        }
+        return null;
     }
 }

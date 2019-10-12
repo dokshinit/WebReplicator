@@ -5,14 +5,15 @@ import fbdbengine.FB_Connection;
 import fbdbengine.FB_CustomException;
 import fbdbengine.FB_Database;
 import fbdbengine.FB_Query;
+import org.firebirdsql.jdbc.FBSQLException;
 import xconfig.XConfig;
 
 import java.io.File;
+import java.sql.Connection;
 import java.sql.SQLException;
 
 import static app.App.isUI;
 import static app.App.logger;
-import static util.DateTools.*;
 
 /**
  * Модель приложения (сессии пользователя)
@@ -83,47 +84,45 @@ public class AppModel {
     }
 
 
-    ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-    // Вспомогательный инструментарий для операций с БД.
-    ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-    /**
-     * Интерфейс для вызова обработчика операции с БД.
-     */
+    /** Интерфейс для вызова обработчика операции с БД. */
     @FunctionalInterface
     interface QFBTask {
         @SuppressWarnings("DuplicateThrows")
         void run(final FB_Connection con) throws ExError, SQLException, Exception;
     }
 
-    /**
-     * Хелпер для операций с БД.
-     */
+    /** Хелпер для операций с БД. */
     void QFB(FB_Database db, QFBTask task) throws ExError {
         String dbname = db == dbCenter ? "Center" : "Web";
-        FB_Connection con;
+        FB_Connection con = null;
         try {
-            con = db.connect(); // Соединение
+            try {
+                con = db.connect(); // Соединение.
+                con.setTransactionIsolation(Connection.TRANSACTION_REPEATABLE_READ); // Полный снапшот.
+                con.setTransactionWait(false); // Исключения по блокировки без ожидания коммита.
 
-        } catch (Exception ex) {
-            FB_CustomException e = FB_CustomException.parse(ex);
-            if (e != null) throw new ExError(ex, "Ошибка подключения к БД(%s): %s", dbname, e.name + ": " + e.message);
-            logger.errorf(ex, "Ошибка подключения к БД(%s)!", dbname);
-            throw new ExError(ex, "Ошибка подключения к БД(%s)! Детальная информация в логе.", dbname);
-        }
-        // Соединение установлено.
-        try {
-            task.run(con);
+            } catch (Exception ex) {
+                FB_CustomException e = FB_CustomException.parse(ex);
+                if (e != null)
+                    throw new ExError(ex, "Ошибка подключения к БД(%s): %s", dbname, e.name + ": " + e.message);
+                logger.errorf(ex, "Ошибка подключения к БД(%s)!", dbname);
+                throw new ExError(ex, "Ошибка подключения к БД(%s)! Детальная информация в логе.", dbname);
+            }
+            // Соединение установлено.
+            try {
+                task.run(con);
 
-        } catch (ExError ex) {
-            logger.error(ex.getMessage());
-            throw ex;
+            } catch (ExError ex) {
+                logger.error(ex.getMessage());
+                throw ex;
 
-        } catch (Exception ex) {
-            FB_CustomException e = FB_CustomException.parse(ex);
-            if (e != null) throw new ExError(ex, "Ошибка операции БД(%s): %s", dbname, e.name + ": " + e.message);
-            logger.errorf(ex, "Ошибка операции БД(%s)!", dbname);
-            throw new ExError(ex, "Ошибка операции БД(%s)! Детальная информация в логе.", dbname);
+            } catch (Exception ex) {
+                FB_CustomException e = FB_CustomException.parse(ex);
+                if (e != null) throw new ExError(ex, "Ошибка операции БД(%s): %s", dbname, e.name + ": " + e.message);
+                logger.errorf(ex, "Ошибка операции БД(%s)!", dbname);
+                throw new ExError(ex, "Ошибка операции БД(%s)! Детальная информация в логе.", dbname);
+
+            }
 
         } finally {
             // Если не внешнее - закрываем с роллбэк (если нужно сохранение данных - это надо сделать в теле задачи).
@@ -131,13 +130,7 @@ public class AppModel {
         }
     }
 
-    ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-    // Репликация БД.
-    ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-
-    private FB_Connection src, dst;
-
-    ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+    /** Репликация всех данных. */
     public void replicate() throws ExError {
         replModel.startReplicate();
         //logger.info("Старт репликации...");
@@ -145,43 +138,20 @@ public class AppModel {
         try {
             try {
                 // Репликация идёт в одном соединении и одной транзакции.
-                QFB(dbCenter, (srcCon) -> {
-                    QFB(dbWeb, (dstCon) -> {
+                QFB(dbCenter, (conSrc) -> {
+                    QFB(dbWeb, (conDst) -> {
 
-                        src = srcCon;
-                        dst = dstCon;
-
-                        FB_Query qdst;
-
-                        ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-                        // Запрос текущей версии.
-                        qdst = dst.execute("EXECUTE PROCEDURE WR_XVER_GET");
-                        if (!qdst.next()) throw new ExError("Ошибка чтения X_VER!");
-                        replModel.setXVer(qdst.getLong("X_VER"));
-                        //logger.infof("X_VER = %d", xver);
-                        qdst.closeSafe();
-
-                        //xver = 0L;
-
-                        ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
                         // Репликация таблиц.
                         for (int i = 0; i < replModel.tabs.length; i++) {
                             TabInfo tab = replModel.tabs[i];
                             replModel.startReplicateTable(i);
-                            replicateTable(tab);
+                            replicateTable(conSrc, conDst, tab);
                             replModel.endReplicateTable();
-                            if (tab.isError) throw new ExError("Ошибка репликации таблицы %s!", tab.name);
+                            if (tab.isError()) throw new ExError("Ошибка[%s] %s!", tab.name, tab.msgError());
                         }
 
-                        ////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-                        // Запись новой версии (если увеличилась).
-                        if (replModel.xver_max > replModel.xver) {
-                            qdst = dst.execute("EXECUTE PROCEDURE WR_XVER_SET(?)", replModel.xver_max);
-                            //logger.infof("X_VERNEW = %d", xver_max);
-                            qdst.closeSafe();
-                        }
-
-                        dst.commit();
+                        conDst.commit();
+                        conSrc.commit();
 
                     });
                 });
@@ -195,58 +165,72 @@ public class AppModel {
         }
     }
 
-    ////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
-    // Реализация репликации Таблицы.
-    private static final String params_ = "?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,";
-
-    private String procParams(int n) {
-        if (n > 0) return "(" + params_.substring(0, n * 2 - 1) + ")";
-        return "";
-    }
-
-    private void replicateTable(TabInfo tab) {
+    /** Реализация репликации одной таблицы. */
+    private void replicateTable(FB_Connection conSrc, FB_Connection conDst, TabInfo tab) {
         tab.start();
         //logger.infof("%s: CALC COUNT FOR IMPORT...", tab.name);
 
-        int index = 0;
-        long xver_max = tab.xver_max;
+        FB_Query qSrc = null, qDst = null;
+        int index = 0, upd = 0, err = 0;
         try {
-            FB_Query qsrc = src.execute("SELECT count(*) FROM WR_EXPORT_" + tab.name + "(?)", replModel.xver);
-            qsrc.next();
-            tab.initCount(qsrc.getInteger(1));
-            qsrc.closeSafe();
+            qSrc = conSrc.execute("EXECUTE PROCEDURE WR_EXPORT_" + tab.name + "_COUNT");
+            qSrc.next();
+            tab.initCount(qSrc.getInteger(1));
+            qSrc.close();
             //logger.infof("%s: FOR IMPORT = %d", tab.name, tab.count);
 
-            qsrc = src.execute("SELECT * FROM WR_EXPORT_" + tab.name + "(?)", replModel.xver);
-            int n = qsrc.rs().getMetaData().getColumnCount();
-            FB_Query qdst = dst.query("EXECUTE PROCEDURE WR_IMPORT_" + tab.name + procParams(n));
+            if (tab.count > 0) { // Если записей для репликации нет, то и не запускаем саму репликацию (чтобы удаление не дергать)!
+                qSrc = conSrc.execute("SELECT * FROM WR_EXPORT_" + tab.name);
+                int n = qSrc.getMetaData().getColumnCount();
+                qDst = conDst.query("EXECUTE PROCEDURE WR_IMPORT_" + tab.name + " (" + FB_Query.buildProcParamsSQL(n) + ")");
 
-            Object[] vals = new Object[n];
-            while (qsrc.get(vals)) {
-                qdst.execute(vals);
-                index++;
-                xver_max = Math.max(xver_max, qsrc.getLong("X_VER"));
-                if (index % 100 == 0) {
-                    tab.updateIndex(index, xver_max);
-                    //    logger.infof("%s: IMPORTED = %d (%.1f%%)", tab.name, tab.count, tab.count == 0 ? 0 : tab.index * 100.0f / tab.count);
+                Object[] vals = new Object[n];
+                while (qSrc.get(vals)) {
+                    qDst.execute(vals);
+                    if (qDst.next()) {
+                        if (qDst.getInteger(1) == 0) upd += 1;
+                    } else {
+                        err++;
+                    }
+                    index++;
+                    if (index % 10000 == 0) {
+                        tab.updateIndex(index);
+                        //logger.infof("%s: IMPORTED = %d (%.1f%%)", tab.name, tab.count, tab.count == 0 ? 0 : tab.index * 100.0f / tab.count);
+                    }
                 }
+                //logger.infof("%s: IMPORTED = %d (100%%)", tab.name, tab.index);
+                qDst.close();
+                qSrc.close();
             }
-            //logger.infof("%s: IMPORTED = %d (100%%)", tab.name, tab.index);
-            qsrc.closeSafe();
-            qdst.closeSafe();
 
-            tab.end(index, xver_max, false);
+            tab.end(index);
 
-        } catch (Exception ex) {
-            tab.end(index, xver_max, true);
-            logger.error("", ex);
-            //logger.infof("TIME = %s", formatHHMMSS(tab.timeMsec));
+        } catch (Exception e) {
+            FB_Query.closeSafe(qDst);
+            FB_Query.closeSafe(qSrc);
+            if (e instanceof FBSQLException) {
+                FBSQLException ex = (FBSQLException) e;
+                if (ex.getErrorCode() == 335544345) {
+                    tab.end(index, "Таблица заблокирована!");
+                } else {
+                    FB_CustomException exx = FB_CustomException.parse(e);
+                    if (exx != null) {
+                        tab.end(index, "FBEx[" + exx.id + ":" + exx.name + "] " + exx.message);
+                    } else {
+                        tab.end(index, "FB: Ошибка репликации " + tab.name + "!");
+                    }
+                }
+            } else {
+                //tab.end(index, ExError.exMsg(e));
+                tab.end(index, "EX: Ошибка репликации " + tab.name + "!");
+            }
+            logger.error(tab.msgError(), e);
         }
+        //logger.infof("TIME = %s", formatHHMMSS(ChronoUnit.MILLIS.between(tab.startTime, tab.endTime)));
     }
 
-    /**
-     * Создание каталога, если не существует.
-     */
+    /** Создание каталога, если не существует. */
+    @SuppressWarnings("Duplicates")
     public static File createDirectoryIfNotExist(String path) throws ExError {
         try {
             File dir = new File(path);
@@ -263,9 +247,7 @@ public class AppModel {
         }
     }
 
-    /**
-     * Безопасное удаление файла.
-     */
+    /** Безопасное удаление файла. */
     public static void deleteFileSafe(String path) {
         try {
             File file = new File(path);

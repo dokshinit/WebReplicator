@@ -10,6 +10,7 @@ import java.io.Closeable;
 import java.math.BigDecimal;
 import java.sql.PreparedStatement;
 import java.sql.ResultSet;
+import java.sql.ResultSetMetaData;
 import java.sql.SQLException;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
@@ -262,7 +263,7 @@ public class FB_Query implements Closeable {
 
     /**
      * Установка параметра выражения. Если выражение не было подготовлено - подготавливается. NULL напрямую не
-     * устанавливается!!! Только в виде объекта Null с явно заданным SQL типом (java.sql.Type).
+     * устанавливается!!! Только в виде объекта Null с явно заданным SQL типом (java.sql.State).
      *
      * @param index     Порядковый номер параметра (1..N).
      * @param parameter Значение параметра.
@@ -488,6 +489,10 @@ public class FB_Query implements Closeable {
         return rs; // сокращенный вариант для удобства
     }
 
+    public PreparedStatement ps() {
+        return ps; // сокращенный вариант для удобства
+    }
+
     public String getSqlText() {
         return sql;
     }
@@ -561,6 +566,16 @@ public class FB_Query implements Closeable {
         return rs.getBigDecimal(name);
     }
 
+    public Long getBigDecimalAsLong(final String name) throws SQLException {
+        BigDecimal v = rs.getBigDecimal(name);
+        return v == null ? null : v.longValue();
+    }
+
+    public Long getBigDecimalMulAsLong(final String name, int dig) throws SQLException {
+        BigDecimal v = rs.getBigDecimal(name);
+        return v == null ? null : v.movePointRight(dig).longValue();
+    }
+
     public Double getDouble(int index) throws SQLException {
         return (Double) rs.getObject(index);
     }
@@ -573,8 +588,20 @@ public class FB_Query implements Closeable {
         return Math.round(getDouble(index) * 100);
     }
 
+    public Long getDoubleMul1AsLong(final String name) throws SQLException {
+        return Math.round(getDouble(name) * 10);
+    }
+
     public Long getDoubleMul2AsLong(final String name) throws SQLException {
         return Math.round(getDouble(name) * 100);
+    }
+
+    public Long getDoubleMul3AsLong(final String name) throws SQLException {
+        return Math.round(getDouble(name) * 1000);
+    }
+
+    public Long getDoubleMul4AsLong(final String name) throws SQLException {
+        return Math.round(getDouble(name) * 10000);
     }
 
     public String getString(int index) throws SQLException {
@@ -583,6 +610,10 @@ public class FB_Query implements Closeable {
 
     public String getString(final String name) throws SQLException {
         return rs.getString(name);
+    }
+
+    public ResultSetMetaData getMetaData() throws SQLException {
+        return rs.getMetaData();
     }
 
     public LocalTime getLocalTime(final String name) throws SQLException {
@@ -600,5 +631,25 @@ public class FB_Query implements Closeable {
     public Boolean getIntegerAsBoolean(final String name) throws SQLException {
         Integer val = getInteger(name);
         return val == null ? null : (val != 0); // Любое значение отличное от нуля = True!
+    }
+
+    /** Возвращает строку для подстановки в текст запроса как перечисления заданного кол-ва параметров. */
+    public static String buildProcParamsSQL(int paramsCount) {
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < paramsCount; i++) sb.append(i == 0 ? "?" : ",?");
+        return sb.toString();
+    }
+
+    /** Возвращает указанный список полей (разделены запятыми), дополненных указанным префиксом. */
+    public static String buildPrefixedFieldsSQL(String prefix, String fields) {
+        String[] sp = fields.split("[^\\ _a-zA-Z]");
+        StringBuilder sb = new StringBuilder();
+        for (int i = 0; i < sp.length; i++) sb.append(i == 0 ? "" : ",").append(prefix).append(sp[i]);
+        return sb.toString();
+    }
+
+    /** Возвращает указанный список полей (разделены запятыми), дополненных указанным алиасом. */
+    public static String buildAliasedFieldsSQL(String alias, String params) {
+        return buildPrefixedFieldsSQL(alias + ".", params);
     }
 }

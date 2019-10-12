@@ -4,6 +4,9 @@
  */
 package fbdbengine;
 
+import org.firebirdsql.gds.TransactionParameterBuffer;
+import org.firebirdsql.jdbc.FirebirdConnection;
+
 import java.sql.Array;
 import java.sql.Blob;
 import java.sql.CallableStatement;
@@ -36,10 +39,9 @@ public class FB_Connection implements java.sql.Connection {
      */
     private final FB_Database database;
     /**
-     * Ссылка на реальное соединение к базе соответствующие методы которого вызываются
-     * имплементированными методами.
+     * Ссылка на реальное соединение к базе соответствующие методы которого вызываются имплементированными методами.
      */
-    private final Connection connection;
+    private final FirebirdConnection connection;
 
     /**
      * Конструктор.
@@ -54,7 +56,7 @@ public class FB_Connection implements java.sql.Connection {
             throw new RuntimeException("Base is null! It must be defined!");
         }
         this.database = base;
-        connection = database.getDatasource().getConnection(user, password);
+        connection = (FirebirdConnection) database.getDatasource().getConnection(user, password);
         connection.setAutoCommit(base.isAutoCommit());
         connection.setHoldability(base.isResultHoldable()
                 ? ResultSet.HOLD_CURSORS_OVER_COMMIT
@@ -70,8 +72,8 @@ public class FB_Connection implements java.sql.Connection {
     }
 
     /**
-     * Закрытие соединения к БД с подтверждением изменений или их откатом. Внещнее соединение не
-     * закрывается, его должен закрыть тот, кто создал.
+     * Закрытие соединения к БД с подтверждением изменений или их откатом. Внещнее соединение не закрывается, его должен
+     * закрыть тот, кто создал.
      *
      * @param iscommit
      * @throws SQLException
@@ -212,6 +214,19 @@ public class FB_Connection implements java.sql.Connection {
         return connection.getCatalog();
     }
 
+    /**
+     * <pre>
+     * Connection.TRANSACTION_SERIALIZABLE     - полная блокировка таблиц, последовательный доступ.
+     *   TPB = CONSISTENCY, WRITE, WAIT
+     * Connection.TRANSACTION_REPEATABLE_READ  - полная изоляция, параллельный доступ (без фантомов).
+     *   TPB = CONCURRENCY, WRITE, WAIT
+     * Connection.TRANSACTION_READ_COMMITTED   - видимость подтвержденных данных, фантомы.
+     *   TPB = READ_COMMITTED, REC_VERSION, WRITE, WAIT
+     * Connection.TRANSACTION_READ_UNCOMMITTED - эквивалентен TRANSACTION_READ_COMMITTED!
+     *   Т.к. в ФБ не разрешена видимость неподтвержденных данных вне транзакции.
+     * Connection.TRANSACTION_NONE             - не поддерживается!
+     * </pre>
+     */
     @Override
     public void setTransactionIsolation(int level) throws SQLException {
         connection.setTransactionIsolation(level);
@@ -408,4 +423,35 @@ public class FB_Connection implements java.sql.Connection {
     }
     // </editor-fold>
     ////////////////////////////////////////////////////////////////////////
+
+    public TransactionParameterBuffer getTransactionParameters(int i) throws SQLException {
+        return connection.getTransactionParameters(i);
+    }
+
+    public TransactionParameterBuffer createTransactionParameterBuffer() throws SQLException {
+        return connection.createTransactionParameterBuffer();
+    }
+
+    public void setTransactionParameters(int i, TransactionParameterBuffer transactionParameterBuffer) throws SQLException {
+        connection.setTransactionParameters(i, transactionParameterBuffer);
+    }
+
+    public void setTransactionParameters(TransactionParameterBuffer transactionParameterBuffer) throws SQLException {
+        connection.setTransactionParameters(transactionParameterBuffer);
+    }
+
+    /** Установка параметра транзакции WAIT или NO_WAIT для текущего уровня изоляции. */
+    public void setTransactionWait(boolean iswait) throws SQLException {
+        int l = getTransactionIsolation();
+        TransactionParameterBuffer tpb = getTransactionParameters(l);
+        if (iswait) {
+            if (tpb.hasArgument(TransactionParameterBuffer.NOWAIT))
+                tpb.removeArgument(TransactionParameterBuffer.NOWAIT);
+            if (!tpb.hasArgument(TransactionParameterBuffer.WAIT)) tpb.addArgument(TransactionParameterBuffer.WAIT);
+        } else {
+            if (tpb.hasArgument(TransactionParameterBuffer.WAIT)) tpb.removeArgument(TransactionParameterBuffer.WAIT);
+            if (!tpb.hasArgument(TransactionParameterBuffer.NOWAIT)) tpb.addArgument(TransactionParameterBuffer.NOWAIT);
+        }
+        setTransactionParameters(l, tpb);
+    }
 }

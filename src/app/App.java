@@ -10,7 +10,6 @@ import util.StringTools;
 
 import java.io.File;
 import java.io.FileWriter;
-import java.lang.management.ManagementFactory;
 import java.time.LocalDateTime;
 import java.util.logging.Level;
 
@@ -114,25 +113,9 @@ public class App {
 
     private static void startApp() throws Exception {
 
-//        ANSIOut out = new ANSIOut();
-//        int dx = out.getWidth();
-//        int dy = out.getHeight();
-//
-//        out.attr(0, 40, 37).clear();
-//
-//        int sx = 1, sy = 1;
-//        for (int y = 0; y < 16; y++) {
-//            for (int x = 0; x < 16; x++) {
-//                //out.at(sx + x * 2, sy + y).bgcolor(x + y * 16).print("AA");
-//                int c = x + y * 16;
-//                out.at(sx + x * 5, sy + y).bgcolor(c).print(" %03d ", c);
-//            }
-//        }
-//        out.attr(0);
-//        if (true) return;
         if (!isUI) {
             try {
-                model.createDirectoryIfNotExist(model.statePath);
+                AppModel.createDirectoryIfNotExist(model.statePath);
 
             } catch (Exception ex) {
                 logger.errorf(ex, "Не удалось создать каталог для файла состояния! (%s)", model.statePath);
@@ -250,7 +233,7 @@ public class App {
                 } else {
                     if (tab.startTime != null) { // ○◉□▣
                         long percent = tab.count == 0 ? 100 : tab.index * 100L / tab.count;
-                        if (tab.isError) {
+                        if (tab.isError()) {
                             out.color(1, bgbase).print(w, " ▣ ");
                         } else {
                             out.color(10, bgbase).print(w, " ▣ ");
@@ -267,7 +250,7 @@ public class App {
             }
 
             if (CM.errMessage == null) {
-                out.println(w, "");
+                out.color(7, bgbase).println(w, "");
             } else {
                 out.color(7, 88).print(w, " Ошибка : ")
                         .color(228).println(trunc(CM.errMessage, w - 10)).color(7, bgbase);
@@ -281,7 +264,7 @@ public class App {
                 //model.createDirectoryIfNotExist("./state/replicator");
                 StringTools.TextBuilder b = new StringTools.TextBuilder();
                 b.println(" «Сервис репликации БД»                                     %s", fmtDT86(stateUpdateTime));
-                b.println(" v2018.02.15                     © Докшин Алексей Николаевич, dokshin@gmail.com");
+                b.println(" v2019.10.12                     © Докшин Алексей Николаевич, dokshin@gmail.com");
                 b.println("--------------------------------------------------------------------------------");
                 b.println(" Время начала работы : %s", h1);
                 b.println(" Общее время работы  : %s", h2);
@@ -302,7 +285,7 @@ public class App {
                         if (tab.startTime != null) { // ○◉□▣
                             long percent = tab.count == 0 ? 100 : tab.index * 100L / tab.count;
                             b.println("[%s] Таблица: %-20s %32s %3d%% %s",
-                                    tab.isError ? "E" : "+",
+                                    tab.isError() ? "E" : "+",
                                     tab.name, String.format("[%d/%d]", tab.index, tab.count), percent,
                                     formatHHMMSS(toMillis(tab.endTime) - toMillis(tab.startTime)));
                         } else {
