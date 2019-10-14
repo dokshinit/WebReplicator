@@ -6,7 +6,8 @@ public class TabInfo {
     public String name;
     public String title;
     public LocalDateTime startTime, endTime;
-    public int count;
+    public int count; // Всего обработано реплицируемых записей.
+    public int writed; // Всего записано реплицируемых записей (меньше или равно count).
     public int index;
     /** Если не null, то содержит текст ошибки репликации. */
     private String msgError;
@@ -21,6 +22,7 @@ public class TabInfo {
         startTime = null;
         endTime = null;
         count = 0;
+        writed = 0;
         index = 0;
         msgError = null;
     }
@@ -31,6 +33,7 @@ public class TabInfo {
         dst.startTime = startTime;
         dst.endTime = endTime;
         dst.count = count;
+        dst.writed = writed;
         dst.index = index;
         dst.msgError = msgError;
     }
@@ -63,9 +66,14 @@ public class TabInfo {
     public synchronized void initCount(int count) {
         this.index = 0;
         this.count = count;
+        this.writed = 0;
     }
 
     public synchronized void updateIndex(int index) {
         this.index = index;
+    }
+
+    public synchronized void updateWrited(int writed) {
+        this.writed = writed;
     }
 }

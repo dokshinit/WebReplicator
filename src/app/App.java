@@ -11,6 +11,7 @@ import util.StringTools;
 import java.io.File;
 import java.io.FileWriter;
 import java.time.LocalDateTime;
+import java.time.temporal.ChronoUnit;
 import java.util.logging.Level;
 
 import static app.model.Helper.fmtDT86;
@@ -131,8 +132,15 @@ public class App {
                     model.replicate();
                     if (model.replModel.curRowCount > 0) {
                         logger.infof("Успешная репликация: время=%s, строк=%d",
-                                formatHHMMSS(toMillis(model.replModel.curEndTime) - toMillis(model.replModel.curEndTime)),
+                                formatHHMMSS(ChronoUnit.MILLIS.between(model.replModel.curStartTime, model.replModel.curEndTime)),
                                 model.replModel.curRowCount);
+                        for (TabInfo t : model.replModel.tabs) {
+                            if (t.count > 0) {
+                                logger.infof("  %s: время=%s строк=%d записано=%d", t.name,
+                                        formatHHMMSS(ChronoUnit.MILLIS.between(t.startTime, t.endTime)),
+                                        t.count, t.writed);
+                            }
+                        }
                     }
 
                 } catch (Exception ex) {
@@ -176,25 +184,33 @@ public class App {
         return s.substring(0, len);
     }
 
+    static long millis(LocalDateTime t1, LocalDateTime t2) {
+        return ChronoUnit.MILLIS.between(t1, t2);
+    }
+
     public static void updateState() {
         stateUpdateTime = LocalDateTime.now();
         model.replModel.copyTo(CM);
         //
         String h1 = "---", h2 = "---", h3 = "---";
         String s1 = "---", s2 = "---";
-        long time = System.currentTimeMillis();
         if (CM.startTime != null) {
-            h1 = fmtDT86(CM.startTime);
-            h2 = formatHHMMSS(System.currentTimeMillis() - toMillis(CM.startTime));
+            h1 = fmtDT86(CM.startTime) + "  (пауза между: " + CM.delayTime + " мс)";
+            h2 = formatHHMMSS(millis(CM.startTime, stateUpdateTime));
             h3 = String.format("%d, время %s", CM.allCount, formatHHMMSS(CM.allMsec));
 
             if (CM.isReplication) {
                 s1 = String.format("%s", fmtDT86(CM.curStartTime));
-                s2 = String.format("%s", formatHHMMSS(time - toMillis(CM.curStartTime)));
+                s2 = String.format("%s", formatHHMMSS(millis(CM.curStartTime, stateUpdateTime)));
             } else {
                 if (CM.curStartTime != null) {
                     s1 = String.format("%s, Завершение: %s", fmtDT86(CM.curStartTime), fmtDT86(CM.curEndTime));
-                    s2 = String.format("%s", formatHHMMSS(toMillis(CM.curEndTime) - toMillis(CM.curStartTime)));
+                    s2 = String.format("%s", formatHHMMSS(millis(CM.curStartTime, CM.curEndTime)));
+                }
+                if (CM.curEndTime != null) {
+                    LocalDateTime enddelay = CM.curEndTime.plusNanos(CM.delayTime * 1000000L);
+                    long tm = millis(stateUpdateTime, enddelay);
+                    h3 = h3 + "  (повтор через: " + formatHHMMSS(tm) + ")";
                 }
             }
         }
@@ -204,7 +220,7 @@ public class App {
             out.reset().at(1, 1);
             out.color(15, bgtitle).bold().print(w, " «Сервис репликации БД»").boldOff()
                     .atX(w - 19).bold().color(230).println(fmtDT86(stateUpdateTime)).boldOff();
-            out.color(45).print(w, " v2018.02.15").atX(w - 46).color(123).print("© Докшин Алексей Николаевич, ")
+            out.color(45).print(w, " v2019.10.12").atX(w - 46).color(123).print("© Докшин Алексей Николаевич, ")
                     .color(49).underline().println("dokshin@gmail.com").underlineOff();
             out.color(bgbase, 18).println(delim3_4).color(7, bgbase);
 
@@ -226,9 +242,9 @@ public class App {
                     long percent = tab.count == 0 ? 0 : tab.index * 100L / tab.count;
                     out.bold().color(11, 20).print(w, " ▶ ");
                     out.color(15).print("Таблица: %s (обработка)", tab.name);
-                    out.atX(w - 7 - 6 - 19).print("%17s", String.format("[%d/%d]", tab.index, tab.count));
+                    out.atX(w - 7 - 6 - 28).print("%27s", String.format("[%d/%d:%d]", tab.index, tab.count, tab.writed));
                     out.atX(w - 7 - 6).print("%3d%%", percent);
-                    out.atX(w - 7).print("%s", formatHHMMSS(time - toMillis(tab.startTime)));
+                    out.atX(w - 7).print("%s", formatHHMMSS(millis(tab.startTime, stateUpdateTime)));
                     out.boldOff();
                 } else {
                     if (tab.startTime != null) { // ○◉□▣
@@ -239,9 +255,9 @@ public class App {
                             out.color(10, bgbase).print(w, " ▣ ");
                         }
                         out.color(7).print("Таблица: %s", tab.name);
-                        out.atX(w - 7 - 6 - 19).print("%17s", String.format("[%d/%d]", tab.index, tab.count));
+                        out.atX(w - 7 - 6 - 28).print("%27s", String.format("[%d/%d:%d]", tab.index, tab.count, tab.writed));
                         out.atX(w - 7 - 6).print("%3d%%", percent);
-                        out.atX(w - 7).print("%s", formatHHMMSS(toMillis(tab.endTime) - toMillis(tab.startTime)));
+                        out.atX(w - 7).print("%s", formatHHMMSS(millis(tab.startTime, tab.endTime)));
                     } else {
                         out.color(21, bgbase).print(w, " □ ").color(7).print("Таблица: %s", tab.name);
                     }
@@ -280,14 +296,14 @@ public class App {
                         long percent = tab.count == 0 ? 0 : tab.index * 100L / tab.count;
                         b.println("[>] Таблица: %-20s %32s %3d%% %s",
                                 tab.name, String.format("[%d/%d]", tab.index, tab.count), percent,
-                                formatHHMMSS(time - toMillis(tab.startTime)));
+                                formatHHMMSS(millis(tab.startTime, stateUpdateTime)));
                     } else {
                         if (tab.startTime != null) { // ○◉□▣
                             long percent = tab.count == 0 ? 100 : tab.index * 100L / tab.count;
                             b.println("[%s] Таблица: %-20s %32s %3d%% %s",
                                     tab.isError() ? "E" : "+",
-                                    tab.name, String.format("[%d/%d]", tab.index, tab.count), percent,
-                                    formatHHMMSS(toMillis(tab.endTime) - toMillis(tab.startTime)));
+                                    tab.name, String.format("[%d/%d:%d]", tab.index, tab.count, tab.writed), percent,
+                                    formatHHMMSS(millis(tab.startTime, tab.endTime)));
                         } else {
                             b.println("[ ] Таблица: %s", tab.name);
                         }

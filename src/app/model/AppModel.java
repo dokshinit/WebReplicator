@@ -187,17 +187,13 @@ public class AppModel {
                 Object[] vals = new Object[n];
                 while (qSrc.get(vals)) {
                     qDst.execute(vals);
-                    if (qDst.next()) {
-                        if (qDst.getInteger(1) == 0) upd += 1;
-                    } else {
-                        err++;
-                    }
+                    qDst.next();
+                    if (qDst.getInteger(1 /*IBUPDATE*/) == 1) tab.updateWrited(++upd);
                     index++;
-                    if (index % 10000 == 0) {
-                        tab.updateIndex(index);
-                        //logger.infof("%s: IMPORTED = %d (%.1f%%)", tab.name, tab.count, tab.count == 0 ? 0 : tab.index * 100.0f / tab.count);
-                    }
+                    if (index % 10000 == 0) tab.updateIndex(index); // Для обновления прогресса в UI.
                 }
+                tab.updateIndex(index); // Для обновления прогресса в UI.
+
                 //logger.infof("%s: IMPORTED = %d (100%%)", tab.name, tab.index);
                 qDst.close();
                 qSrc.close();

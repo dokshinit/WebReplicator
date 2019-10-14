@@ -237,6 +237,8 @@ public class FB_Query implements Closeable {
             value = new java.sql.Date(DateTools.asDate((LocalDate) value).getTime());
         } else if (clazz == LocalDateTime.class) {
             value = new java.sql.Date(DateTools.asDate((LocalDateTime) value).getTime());
+        } else if (clazz == LocalTime.class) {
+            value = new java.sql.Date(DateTools.asDate((LocalTime) value).getTime());
         }
         return value;
     }
@@ -616,16 +618,33 @@ public class FB_Query implements Closeable {
         return rs.getMetaData();
     }
 
+    public LocalTime getLocalTime(int index) throws SQLException {
+        return DateTools.asLocalTime(getDate(index));
+    }
+
     public LocalTime getLocalTime(final String name) throws SQLException {
         return DateTools.asLocalTime(getDate(name));
+    }
+
+    public LocalDate getLocalDate(int index) throws SQLException {
+        return DateTools.asLocalDate(getDate(index));
     }
 
     public LocalDate getLocalDate(final String name) throws SQLException {
         return DateTools.asLocalDate(getDate(name));
     }
 
+    public LocalDateTime getLocalDateTime(int index) throws SQLException {
+        return DateTools.asLocalDateTime(getDate(index));
+    }
+
     public LocalDateTime getLocalDateTime(final String name) throws SQLException {
         return DateTools.asLocalDateTime(getDate(name));
+    }
+
+    public Boolean getIntegerAsBoolean(int index) throws SQLException {
+        Integer val = getInteger(index);
+        return val == null ? null : (val != 0); // Любое значение отличное от нуля = True!
     }
 
     public Boolean getIntegerAsBoolean(final String name) throws SQLException {
